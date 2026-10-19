@@ -68,6 +68,7 @@
       id: side.id, name: side.name, price: side.price, emoji: side.emoji, category: 'side',
       image: side.image || '', needsRice: false, toppingIds: [], standardSideIds: [],
       allergens: side.allergens, recommended: !!side.recommended, placeholder: side.placeholder !== false,
+      tags: side.tags || [],
     };
   }
 
@@ -79,6 +80,9 @@
   const RICE_SIZE_MAP = byId(D.riceSizes);
   const ALLERGEN_MAP = byId(D.allergens);
   const CATEGORY_MAP = byId(D.categories);
+  const TAG_MAP = byId(D.tags);
+  const AGE_MAP = byId(D.ageGroups);
+  const GENDER_MAP = byId(D.genders);
 
   // data.js の書き間違いを開発者ツールに知らせる（画面は止めない）
   function checkData() {
@@ -100,13 +104,20 @@
       p.toppingIds.forEach((t) => { if (!TOPPING_MAP[t]) problems.push(`${p.id}: 不明なトッピング ${t}`); });
       p.standardSideIds.forEach((s) => { if (!SIDE_MAP[s]) problems.push(`${p.id}: 不明な付け合わせ ${s}`); });
     });
+    ITEMS.forEach((x) => {
+      if (!Array.isArray(x.tags)) problems.push(`${x.id}: tags がありません`);
+      (x.tags || []).forEach((t) => { if (!TAG_MAP[t]) problems.push(`${x.id}: 不明な tag ${t}`); });
+    });
+    [].concat(D.ageGroups, D.genders).forEach((g) => {
+      Object.keys(g.weights).forEach((t) => { if (!TAG_MAP[t]) problems.push(`${g.id}: 不明な tag ${t}`); });
+    });
     problems.forEach((msg) => console.warn('[data.js]', msg));
   }
 
   /* ================= 状態 ================= */
 
   const state = {
-    visit: load(STORAGE.visit, null), // { tableNumber, startedAt }
+    visit: load(STORAGE.visit, null), // { tableNumber, startedAt, ageGroup, gender }
     basket: [],
     allergens: [],
     category: D.categories[0].id,
@@ -218,9 +229,12 @@
     return item.placeholder || !item.image ? placeholderSrc(item) : item.image;
   }
 
+  // 左上：お客さま向けの「おすすめ」（オレンジ）、右上：店の「店長イチオシ」
   function photoHtml(item, withBadge) {
-    const badge = withBadge && item.recommended ? '<span class="rec-badge">おすすめ</span>' : '';
-    return `<img src="${esc(imageSrc(item))}" alt="${esc(item.name)}" loading="lazy" onerror="this.onerror=null;this.src='${NO_IMAGE}'">${badge}`;
+    let badges = '';
+    if (withBadge && personalPicks().has(item.id)) badges += '<span class="personal-badge">おすすめ</span>';
+    if (withBadge && item.recommended) badges += '<span class="rec-badge">店長イチオシ</span>';
+    return `<img src="${esc(imageSrc(item))}" alt="${esc(item.name)}" loading="lazy" onerror="this.onerror=null;this.src='${NO_IMAGE}'">${badges}`;
   }
 
   function extraAsItem(kind) {
@@ -317,10 +331,76 @@
         state.basket = [];
         saveBasket();
       }
-      state.visit = { tableNumber: n, startedAt: new Date().toISOString() };
+      state.visit = { tableNumber: n, startedAt: new Date().toISOString(), ageGroup: null, gender: null };
       store(STORAGE.visit, state.visit);
     }
+    showProfileScreen();
+  }
+
+  /* ================= お客さま情報（年齢層・性別） ================= */
+
+  function profileOptionsHtml(name, list, selectedId) {
+    return list.map((x) => `
+      <label class="profile-option">
+        <input type="radio" name="${name}" value="${esc(x.id)}"${x.id === selectedId ? ' checked' : ''}>
+        <span>${esc(x.label)}</span>
+      </label>`).join('');
+  }
+
+  function showProfileScreen() {
+    $('#profile-age').innerHTML = profileOptionsHtml('age-group', D.ageGroups, state.visit.ageGroup);
+    $('#profile-gender').innerHTML = profileOptionsHtml('gender', D.genders, state.visit.gender);
+    $('#profile-error').hidden = true;
+    showScreen('screen-profile');
+  }
+
+  function submitProfile(event) {
+    event.preventDefault();
+    const age = $('#profile-form input[name="age-group"]:checked');
+    const gender = $('#profile-form input[name="gender"]:checked');
+    const missing = [];
+    if (!age || !AGE_MAP[age.value]) missing.push('年齢層');
+    if (!gender || !GENDER_MAP[gender.value]) missing.push('性別');
+    if (missing.length) {
+      const err = $('#profile-error');
+      err.textContent = `${missing.join('と')}を選んでください。`;
+      err.hidden = false;
+      return;
+    }
+    state.visit.ageGroup = age.value;
+    state.visit.gender = gender.value;
+    store(STORAGE.visit, state.visit);
     enterMain();
+  }
+
+  function hasProfile() {
+    return !!(state.visit && AGE_MAP[state.visit.ageGroup] && GENDER_MAP[state.visit.gender]);
+  }
+
+  /* ================= お客さま向けおすすめ ================= */
+
+  // 年齢層・性別の weights と商品の tags から点数を出し、各ページ上位を選ぶ。
+  // 選択中のアレルギー物質を含む商品はおすすめしない。
+  let personalCache = { key: '', ids: new Set() };
+
+  function personalPicks() {
+    if (!hasProfile()) return new Set();
+    const key = `${state.visit.ageGroup}|${state.visit.gender}|${state.allergens.join(',')}`;
+    if (personalCache.key === key) return personalCache.ids;
+    const weights = [AGE_MAP[state.visit.ageGroup].weights, GENDER_MAP[state.visit.gender].weights];
+    const score = (item) => item.tags.reduce((sum, t) => sum + weights.reduce((s, w) => s + (w[t] || 0), 0), 0);
+    const ids = new Set();
+    D.categories.forEach((cat) => {
+      ITEMS
+        .filter((i) => i.category === cat.id && !hasSelectedAllergen(i.allergens))
+        .map((i, order) => ({ id: i.id, score: score(i), order }))
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score || a.order - b.order)
+        .slice(0, CFG.personalPerCategory)
+        .forEach((x) => ids.add(x.id));
+    });
+    personalCache = { key, ids };
+    return ids;
   }
 
   function enterMain() {
@@ -388,8 +468,9 @@
 
   function cardHtml(item) {
     const warn = hasSelectedAllergen(item.allergens);
+    const personal = personalPicks().has(item.id);
     return `
-      <button type="button" class="card${warn ? ' warn' : ''}" data-item="${esc(item.id)}">
+      <button type="button" class="card${personal ? ' personal' : ''}${warn ? ' warn' : ''}" data-item="${esc(item.id)}">
         <span class="card-photo">${photoHtml(item, true)}</span>
         <span class="card-body">
           <span class="card-name">${esc(item.name)}</span>
@@ -414,7 +495,7 @@
       <h2 class="page-title">${esc(cat.label)}</h2>
       ${recs.length ? `
         <section class="rec-section">
-          <h3 class="sec-title"><span class="star">★</span> おすすめ</h3>
+          <h3 class="sec-title"><span class="star">★</span> 店長イチオシ</h3>
           <div class="rec-strip">${recs.map(cardHtml).join('')}</div>
         </section>` : ''}
       <section>
@@ -1072,6 +1153,9 @@
     $('#btn-start').addEventListener('click', showTableScreen);
     $('#btn-table-back').addEventListener('click', () => showScreen('screen-start'));
     $('#table-form').addEventListener('submit', submitTable);
+    $('#profile-form').addEventListener('submit', submitProfile);
+    $('#profile-form').addEventListener('change', () => { $('#profile-error').hidden = true; });
+    $('#btn-profile-back').addEventListener('click', showTableScreen);
     $('#table-input').addEventListener('input', () => { $('#table-error').hidden = true; });
     $('#hdr-table').addEventListener('click', showTableScreen);
 

@@ -30,6 +30,26 @@
     <button type="button" id="btn-table-back" class="btn text">‹ 戻る</button>
   </section>
 
+  <!-- お客さま情報（年齢層・性別）入力画面 -->
+  <section id="screen-profile" class="screen profile-screen" hidden>
+    <p class="small-store" data-store-name></p>
+    <h2 class="table-title">お客さまについて教えてください</h2>
+    <p class="table-hint">お客さまに合ったおすすめの商品をご案内します</p>
+    <form id="profile-form" class="profile-form" novalidate>
+      <fieldset class="profile-group">
+        <legend class="profile-legend">年齢層</legend>
+        <div class="profile-options cols-2" id="profile-age"></div>
+      </fieldset>
+      <fieldset class="profile-group">
+        <legend class="profile-legend">性別</legend>
+        <div class="profile-options cols-3" id="profile-gender"></div>
+      </fieldset>
+      <p id="profile-error" class="error-text" role="alert" hidden></p>
+      <button type="submit" class="btn primary big">メニューを見る</button>
+    </form>
+    <button type="button" id="btn-profile-back" class="btn text">‹ テーブル番号に戻る</button>
+  </section>
+
   <!-- メイン画面 -->
   <section id="screen-main" class="screen main-screen" hidden>
     <header class="main-header">
